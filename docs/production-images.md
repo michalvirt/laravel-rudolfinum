@@ -4,11 +4,11 @@
 
 Compose tags the three images it builds:
 
-| Target | Image | What it runs |
-| --- | --- | --- |
-| `app` | `rudolfinum-app:production` | PHP 8.5 FPM. Also used for migrations, the scheduler, and the queue worker. |
-| `web` | `rudolfinum-web:production` | nginx, serving `public/` including the Vite build. |
-| `ssr` | `rudolfinum-ssr:production` | Node 22, serving the bundled Inertia SSR server on port 13714. |
+| Target | Image                       | What it runs                                                                |
+| ------ | --------------------------- | --------------------------------------------------------------------------- |
+| `app`  | `rudolfinum-app:production` | PHP 8.5 FPM. Also used for migrations, the scheduler, and the queue worker. |
+| `web`  | `rudolfinum-web:production` | nginx, serving `public/` including the Vite build.                          |
+| `ssr`  | `rudolfinum-ssr:production` | Node 22, serving the bundled Inertia SSR server on port 13714.              |
 
 MariaDB is not built from this repository. `compose.production.yaml` pulls `mariadb:11.8` and keeps its data in the `database` volume. The application connects with Laravel's `mariadb` driver.
 
@@ -53,24 +53,20 @@ Compose builds `rudolfinum-app:production`, `rudolfinum-web:production`, and `ru
 
 ## Build arguments
 
-| Argument | Default | Used for |
-| --- | --- | --- |
+| Argument        | Default   | Used for                                                    |
+| --------------- | --------- | ----------------------------------------------------------- |
 | `VITE_APP_NAME` | `Laravel` | Application name compiled into the frontend and SSR bundle. |
-| `PHP_VERSION` | `8.5` | `php` image tag for the build stage and the FPM runtime. |
-| `NODE_VERSION` | `22` | `node` image tag for the asset build and the SSR runtime. |
 
-`PHP_VERSION` and `NODE_VERSION` have defaults in the Dockerfile. Compose passes only `VITE_APP_NAME`. Override the versions on a direct build:
+PHP 8.5 and Node 22 are pinned in the `Dockerfile`. Podman rejects a `COPY --from` stage whose `FROM` line still contains a variable, so those versions are not build arguments.
 
 ```bash
 docker build \
   --target app \
-  --build-arg PHP_VERSION=8.5 \
-  --build-arg NODE_VERSION=22 \
   --build-arg VITE_APP_NAME="Rudolfinum" \
   -t rudolfinum-app:production .
 ```
 
-Repeat the same `PHP_VERSION`, `NODE_VERSION`, and `VITE_APP_NAME` for the `web` and `ssr` targets so all three images come from one dependency set.
+Pass the same `VITE_APP_NAME` for the `web` and `ssr` targets so all three images come from one frontend build.
 
 ## Another CPU architecture
 

@@ -15,8 +15,15 @@ class PermissionGroupSeeder extends Seeder
      */
     public function run(): void
     {
-        PermissionGroup::factory()->administrators()->create();
-        PermissionGroup::factory()->planners()->create();
-        PermissionGroup::factory()->viewers()->create();
+        foreach ([
+            PermissionGroup::factory()->administrators()->raw(),
+            PermissionGroup::factory()->planners()->raw(),
+            PermissionGroup::factory()->viewers()->raw(),
+        ] as $attributes) {
+            PermissionGroup::query()->firstOrCreate(
+                ['name' => $attributes['name']],
+                $attributes,
+            );
+        }
     }
 }

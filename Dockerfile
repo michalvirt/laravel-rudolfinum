@@ -5,12 +5,11 @@
 #   web  — nginx on Alpine, public assets only
 #   ssr  — Node on Alpine, the bundled Inertia SSR server
 
-ARG PHP_VERSION=8.5
-ARG NODE_VERSION=22
-
 FROM composer:2 AS composer_bin
 
-FROM php:${PHP_VERSION}-cli-bookworm AS build
+FROM node:22-bookworm-slim AS node_bin
+
+FROM php:8.5-cli-bookworm AS build
 
 ARG VITE_APP_NAME=Laravel
 
@@ -33,8 +32,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git libatomic1 unzip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=node:${NODE_VERSION}-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:${NODE_VERSION}-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node_bin /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_bin /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
@@ -58,12 +57,20 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . .
 
-RUN export APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')" \
+RUN mkdir -p \
+        storage/app/private \
+        storage/app/public \
+        storage/framework/cache/data \
+        storage/framework/sessions \
+        storage/framework/views \
+        storage/logs \
+        bootstrap/cache \
+    && export APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')" \
     && composer dump-autoload --optimize --no-dev --no-interaction \
     && npm run build:ssr \
     && rm -rf node_modules
 
-FROM php:${PHP_VERSION}-fpm-alpine AS app
+FROM php:8.5-fpm-alpine AS app
 
 ADD --chmod=0755 https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
 
@@ -110,7 +117,7 @@ FROM nginx:1.28-alpine AS web
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/public /var/www/html/public
 
-FROM node:${NODE_VERSION}-alpine AS ssr
+FROM node:22-alpine AS ssr
 
 WORKDIR /app
 
@@ -122,4 +129,4 @@ ENV NODE_ENV=production
 
 EXPOSE 13714
 
-CMD ["node", "bootstrap/ssr/ssr.js"]
+CMD ["node", "bootstrap/ssr/app.js"]
