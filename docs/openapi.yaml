@@ -1,0 +1,2371 @@
+openapi: 3.1.0
+
+info:
+    title: Laravel Rudolfinum HTTP API
+    version: 1.0.0
+    summary: Session-authenticated web endpoints of the Rudolfinum planning application.
+    description: |
+        The application is a server-driven SPA built with **Laravel + Inertia.js**. It has no separate
+        token-based REST API: every endpoint below is a regular web route.
+
+        ### Conventions
+
+        * **Authentication** uses the Laravel session cookie. Log in with `POST /login`; the response sets the cookie.
+        * **CSRF**: every `POST`, `PUT`, `PATCH` and `DELETE` needs the CSRF token. Send the value of the
+          `XSRF-TOKEN` cookie in the `X-XSRF-TOKEN` header (the Inertia client does this automatically).
+        * **Page endpoints (`GET`)** render an Inertia page. Send `X-Inertia: true` to receive the page
+          object as JSON (`component`, `props`, `url`, `version`, `flash`). Without the header the same URL
+          returns the full HTML document.
+        * **Mutation endpoints** answer with a **redirect** back to the page (`302`, or `303` for `PUT`, `PATCH`
+          and `DELETE` requests made by the Inertia client). A success or warning message is delivered as
+          Inertia flash data on the next page response.
+        * **Validation errors**: Inertia/browser requests are redirected back with the errors in the session
+          and exposed as the `errors` prop. Requests sending `Accept: application/json` get `422` with the
+          standard Laravel body `{ "message": "...", "errors": { "field": ["..."] } }`.
+        * **Unauthenticated**: redirect to `/login` (`401` for JSON requests). **Forbidden**: `403`.
+        * **Identifiers** are UUIDs. Dates are `YYYY-MM-DD`, months are `YYYY-MM`.
+        * `PUT` endpoints also accept `PATCH` where Laravel resource routes are used (`plan-events`,
+          `plan-event-objects`, `plan-categories`, `plan-import`, `accounts`).
+
+        ### Permissions
+
+        | Permission | Default groups |
+        | --- | --- |
+        | `calendar.view` | Administrators, Planners, Viewers |
+        | `plan-calendar.view` | Administrators, Planners, Viewers |
+        | `plan-calendar.edit` | Administrators, Planners |
+        | `plan-categories.manage` | Administrators |
+        | `plan-import.manage` | Administrators |
+        | `email-notifications.manage` | Administrators |
+        | `accounts.manage` | Administrators |
+        | `importGoogleSheet.notification` | Administrators |
+        | `planEventChange.notification` | Administrators, Planners, Viewers |
+
+        The two `*.notification` permissions do not protect an endpoint, they only make a user receive an email
+        notification. They can be set on a group or on a single account.
+    license:
+        name: Proprietary
+        identifier: LicenseRef-Proprietary
+
+servers:
+    - url: http://localhost:8000
+      description: Local development (`php artisan serve`)
+
+tags:
+    - name: System
+      description: Health check and public pages.
+    - name: Authentication
+      description: Login and logout.
+    - name: Profile
+      description: The signed-in user changes their own profile and password.
+    - name: Calendar
+      description: Plain month calendar.
+    - name: Plan calendar
+      description: Month plan, availability and staff visibility.
+    - name: Plan events
+      description: Events, their objects and assignments.
+    - name: Plan categories
+      description: Categories used by event objects.
+    - name: Google Sheets import
+      description: Import definitions, runs and change review.
+    - name: Email notifications
+      description: Log of the sent emails, sending settings and resending.
+    - name: Accounts
+      description: User accounts and passwords.
+
+security:
+    - sessionCookie: []
+
+paths:
+    /up:
+        get:
+            tags: [System]
+            operationId: healthCheck
+            summary: Health check
+            description: Laravel health endpoint. Returns `200` when the application boots.
+            security: []
+            responses:
+                '200':
+                    description: Application is up.
+                    content:
+                        text/html:
+                            schema:
+                                type: string
+
+    /:
+        get:
+            tags: [System]
+            operationId: home
+            summary: Home page
+            security: []
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+            responses:
+                '200':
+                    $ref: '#/components/responses/InertiaPage'
+
+    /login:
+        get:
+            tags: [Authentication]
+            operationId: login.show
+            summary: Login form
+            description: Only for guests. Authenticated users are redirected away.
+            security: []
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+            responses:
+                '200':
+                    $ref: '#/components/responses/InertiaPage'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+        post:
+            tags: [Authentication]
+            operationId: login.store
+            summary: Sign in
+            description: |
+                Authenticates by email and password and regenerates the session id. At most **5 failed attempts**
+                per `email|ip` are allowed; further attempts fail with a throttle message until the lockout expires.
+                Redirects to the originally requested URL, or `/`.
+            security: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/LoginRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/LoginRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /logout:
+        post:
+            tags: [Authentication]
+            operationId: logout
+            summary: Sign out
+            description: Invalidates the session, regenerates the CSRF token and redirects to `/`.
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '401':
+                    $ref: '#/components/responses/Unauthenticated'
+
+    /profile:
+        put:
+            tags: [Profile]
+            operationId: profile.update
+            summary: Update your own profile
+            description: |
+                Updates the name, surname, phone and email of the signed-in user. Needs no permission. The permission group
+                and permissions cannot be changed.
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateProfileRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdateProfileRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '401':
+                    $ref: '#/components/responses/Unauthenticated'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /profile/password:
+        put:
+            tags: [Profile]
+            operationId: profile.password.update
+            summary: Change your own password
+            description: |
+                Needs the current password. Sets the new password, rotates the remember token and, with the `database`
+                session driver, signs the user out of the other sessions. The current session stays. Needs no permission.
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateProfilePasswordRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdateProfilePasswordRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '401':
+                    $ref: '#/components/responses/Unauthenticated'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /calendar:
+        get:
+            tags: [Calendar]
+            operationId: calendar.show
+            summary: Month calendar
+            description: |
+                Monday-based grid of full weeks for a month. Requires `calendar.view`.
+            x-required-permission: calendar.view
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+                - $ref: '#/components/parameters/Month'
+            responses:
+                '200':
+                    description: Inertia page `calendar`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: calendar
+                                          props:
+                                              $ref: '#/components/schemas/CalendarProps'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-calendar-view:
+        get:
+            tags: [Plan calendar]
+            operationId: planCalendarView.show
+            summary: Plan calendar (read-only)
+            description: |
+                Every day of the month with its events, objects and the users who have time. Operators and
+                engineers are returned as `null` unless the month was made visible
+                (see `PUT /plan-calendar-edit/staff-visibility`). Requires `plan-calendar.view`.
+            x-required-permission: plan-calendar.view
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+                - $ref: '#/components/parameters/Month'
+            responses:
+                '200':
+                    description: Inertia page `plan-calendar-view`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: plan-calendar-view
+                                          props:
+                                              allOf:
+                                                  - $ref: '#/components/schemas/PlanMonth'
+                                                  - type: object
+                                                    properties:
+                                                        staff:
+                                                            type: array
+                                                            items:
+                                                                $ref: '#/components/schemas/StaffMember'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-calendar-view/availability:
+        put:
+            tags: [Plan calendar]
+            operationId: planCalendarView.availability
+            summary: Mark or clear a day the current user has time to work
+            description: |
+                Affects only the logged-in user. Only days from the first day of the **next month** onwards
+                can be changed. Selecting an already selected day keeps its original timestamp, which decides the
+                order in which users are listed for the day. Requires `plan-calendar.view`.
+            x-required-permission: plan-calendar.view
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateAvailabilityRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdateAvailabilityRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-events/{planEvent}/change-acknowledgement:
+        parameters:
+            - $ref: '#/components/parameters/PlanEventId'
+        post:
+            tags: [Plan events]
+            operationId: planEvents.changeAcknowledgement
+            summary: Confirm that the logged-in user knows about an accepted change of an event
+            description: |
+                Allowed only for a user assigned as an operator or an engineer of the event (`403` otherwise).
+                An event whose `original_text_changed` is `false` is ignored. Other users' confirmations
+                and the mark for planners are untouched. Requires `plan-calendar.view`.
+            x-required-permission: plan-calendar.view
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /plan-calendar-edit:
+        get:
+            tags: [Plan calendar]
+            operationId: planCalendarEdit.show
+            summary: Plan calendar editor
+            description: |
+                Same payload as the view plus the list of categories. Assignments are always included.
+                Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+                - $ref: '#/components/parameters/Month'
+            responses:
+                '200':
+                    description: Inertia page `plan-calendar-edit`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: plan-calendar-edit
+                                          props:
+                                              allOf:
+                                                  - $ref: '#/components/schemas/PlanMonth'
+                                                  - type: object
+                                                    properties:
+                                                        categories:
+                                                            type: array
+                                                            items:
+                                                                $ref: '#/components/schemas/PlanCategory'
+                                                        staff:
+                                                            type: array
+                                                            items:
+                                                                $ref: '#/components/schemas/StaffMember'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-calendar-edit/staff-visibility:
+        put:
+            tags: [Plan calendar]
+            operationId: planCalendarEdit.staffVisibility
+            summary: Show or hide operators and engineers of a month in the view
+            description: Creates or updates the month setting. A month without a setting is hidden. Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StaffVisibilityRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/StaffVisibilityRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-events:
+        post:
+            tags: [Plan events]
+            operationId: planEvents.store
+            summary: Add an event to a day
+            description: Creates an event without a name and without an import, so objects can be added to it. Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StorePlanEventRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/StorePlanEventRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-events/{planEvent}:
+        parameters:
+            - $ref: '#/components/parameters/PlanEventId'
+        put:
+            tags: [Plan events]
+            operationId: planEvents.update
+            summary: Show or hide the original (imported) text of an event
+            description: |
+                Deciding about the text also resets `original_text_changed` to `false`,
+                which clears the mark left by an accepted import change. Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdatePlanEventRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdatePlanEventRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [Plan events]
+            operationId: planEvents.destroy
+            summary: Remove an event added by hand
+            description: |
+                Deletes the event and its objects. **Imported events cannot be removed** (`403`).
+                Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /plan-events/{planEvent}/assignments:
+        parameters:
+            - $ref: '#/components/parameters/PlanEventId'
+        put:
+            tags: [Plan events]
+            operationId: planEvents.assignments
+            summary: Assign operators and engineers to an event
+            description: |
+                All six positions must be present; send `null` to clear a position. Rules:
+
+                * a user may hold only one position of an event;
+                * a user may not be assigned to another event on the same day;
+                * positions are filled in order (`operator_2` needs `operator_1`, and so on).
+
+                Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/AssignmentsRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/AssignmentsRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-events/{planEvent}/objects/order:
+        parameters:
+            - $ref: '#/components/parameters/PlanEventId'
+        put:
+            tags: [Plan events]
+            operationId: planEvents.objects.order
+            summary: Reorder the objects of an event
+            description: The list must contain every object id of the event exactly once. Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ReorderObjectsRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/ReorderObjectsRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-event-objects:
+        post:
+            tags: [Plan events]
+            operationId: planEventObjects.store
+            summary: Add an object to an event
+            description: The object is appended behind the existing ones. Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveObjectRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveObjectRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-event-objects/{planEventObject}:
+        parameters:
+            - name: planEventObject
+              in: path
+              required: true
+              description: Object id.
+              schema:
+                  type: string
+                  format: uuid
+        put:
+            tags: [Plan events]
+            operationId: planEventObjects.update
+            summary: Change the text or the category of an object
+            description: The event of an object cannot be changed (`plan_event_id` is ignored). Requires `plan-calendar.edit`.
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveObjectRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveObjectRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [Plan events]
+            operationId: planEventObjects.destroy
+            summary: Remove an object from an event
+            x-required-permission: plan-calendar.edit
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /plan-categories:
+        get:
+            tags: [Plan categories]
+            operationId: planCategories.index
+            summary: List categories
+            description: Categories ordered by label with the number of objects using them. Requires `plan-categories.manage`.
+            x-required-permission: plan-categories.manage
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+            responses:
+                '200':
+                    description: Inertia page `plan-categories`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: plan-categories
+                                          props:
+                                              type: object
+                                              properties:
+                                                  categories:
+                                                      type: array
+                                                      items:
+                                                          $ref: '#/components/schemas/PlanCategoryWithUsage'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [Plan categories]
+            operationId: planCategories.store
+            summary: Create a category
+            x-required-permission: plan-categories.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveCategoryRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveCategoryRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-categories/{planEventCategory}:
+        parameters:
+            - name: planEventCategory
+              in: path
+              required: true
+              description: Category id.
+              schema:
+                  type: string
+                  format: uuid
+        put:
+            tags: [Plan categories]
+            operationId: planCategories.update
+            summary: Update a category
+            description: The category may keep its own label. Requires `plan-categories.manage`.
+            x-required-permission: plan-categories.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveCategoryRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveCategoryRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [Plan categories]
+            operationId: planCategories.destroy
+            summary: Delete a category
+            description: |
+                Fails with a validation error keyed `category` when any object still uses the category.
+                Requires `plan-categories.manage`.
+            x-required-permission: plan-categories.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-import:
+        get:
+            tags: [Google Sheets import]
+            operationId: planImport.index
+            summary: List saved imports and the rows of the selected one
+            description: |
+                Without `import`, the oldest import is selected. The API key is never returned, only `hasApiKey`.
+                Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+                - name: import
+                  in: query
+                  required: false
+                  description: Id of the import whose rows are listed.
+                  schema:
+                      type: string
+                      format: uuid
+            responses:
+                '200':
+                    description: Inertia page `plan-import`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: plan-import
+                                          props:
+                                              $ref: '#/components/schemas/PlanImportProps'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [Google Sheets import]
+            operationId: planImport.store
+            summary: Save a new import
+            description: |
+                Verifies the connection by listing the tabs of the spreadsheet and checks that `sheet_name` is one of them,
+                then stores the import (API key encrypted). Redirects to `/plan-import?import={id}`.
+                Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveImportRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveImportRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-import/tabs:
+        post:
+            tags: [Google Sheets import]
+            operationId: planImport.tabs
+            summary: List the tabs of a spreadsheet
+            description: |
+                The only endpoint that always answers with JSON. Used to pick a tab before the import is saved.
+                The API key is the submitted one, else the key of `import_id`, else `GOOGLE_SHEETS_API_KEY`.
+                Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ListTabsRequest'
+            responses:
+                '200':
+                    description: Titles of the tabs of the spreadsheet.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListTabsResponse'
+                            example:
+                                sheet_names: ['Listopad 2026', 'Prosinec 2026']
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-import/{googleSheetImportSetting}:
+        parameters:
+            - $ref: '#/components/parameters/ImportId'
+        put:
+            tags: [Google Sheets import]
+            operationId: planImport.update
+            summary: Update a saved import
+            description: Omit `api_key` to keep the saved key. Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveImportRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveImportRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [Google Sheets import]
+            operationId: planImport.destroy
+            summary: Delete a saved import
+            description: Imported rows and the plan calendar stay untouched. Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /plan-import/{googleSheetImportSetting}/run:
+        parameters:
+            - $ref: '#/components/parameters/ImportId'
+        post:
+            tags: [Google Sheets import]
+            operationId: planImport.run
+            summary: Run an import now
+            description: |
+                Reads the configured range from Google Sheets, creates new rows and plan events and records differences
+                of existing rows as pending changes. Flashes `success` with the summary
+                (`Import finished: N new, N changed, N unchanged.`) and `warning` listing skipped rows. On failure the import
+                is marked `failed` and a validation error keyed `sheet` is returned. Every run also creates the email
+                notification of the Google Sheets import. Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /plan-import/{googleSheetImportSetting}/changes/accept:
+        parameters:
+            - $ref: '#/components/parameters/ImportId'
+        post:
+            tags: [Google Sheets import]
+            operationId: planImport.changes.acceptAll
+            summary: Accept the pending changes of every row of an import
+            description: Rows without pending changes are skipped. Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /plan-import/changes/{googleSheetImport}/accept:
+        parameters:
+            - name: googleSheetImport
+              in: path
+              required: true
+              description: Id of an imported row.
+              schema:
+                  type: string
+                  format: uuid
+        post:
+            tags: [Google Sheets import]
+            operationId: planImport.changes.accept
+            summary: Accept the pending changes of one row
+            description: |
+                Copies the sheet values to the row, clears `changed_fields` and synchronises the paired plan event.
+                A renamed event is shown again and marked as changed; an emptied name deletes the event.
+                Requires `plan-import.manage`.
+            x-required-permission: plan-import.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /email-notifications:
+        get:
+            tags: [Email notifications]
+            operationId: emailNotifications.index
+            summary: Email notification log and settings
+            description: |
+                The logged email notifications, newest first, 20 per page, together with the settings of every notification.
+                Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+                - name: state
+                  in: query
+                  required: false
+                  description: Filter of the log. An unknown value means `all`.
+                  schema:
+                      type: string
+                      enum: [all, sent, failed, pending]
+                      default: all
+                - name: page
+                  in: query
+                  required: false
+                  description: Page of the log, starting at 1.
+                  schema:
+                      type: integer
+                      minimum: 1
+                      default: 1
+            responses:
+                '200':
+                    description: Inertia page `email-notifications`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: email-notifications
+                                          props:
+                                              $ref: '#/components/schemas/EmailNotificationsProps'
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+
+    /email-notifications/actions/{emailNotificationActionSetting}:
+        parameters:
+            - name: emailNotificationActionSetting
+              in: path
+              required: true
+              description: Id of the settings of one notification.
+              schema:
+                  type: string
+                  format: uuid
+        put:
+            tags: [Email notifications]
+            operationId: emailNotifications.actions.update
+            summary: Save the settings of one notification
+            description: Name and its colors, sending mode, batch interval, language, receiver permission and whether the notification is enabled. Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/SaveEmailNotificationActionSettingRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/SaveEmailNotificationActionSettingRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /email-notifications/send-pending:
+        post:
+            tags: [Email notifications]
+            operationId: emailNotifications.sendPending
+            summary: Send every waiting notification
+            description: Sends the rows that no send was attempted for. Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+
+    /email-notifications/send-failed:
+        post:
+            tags: [Email notifications]
+            operationId: emailNotifications.sendFailed
+            summary: Send every failed notification again
+            description: Retries the rows whose last send failed. Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+
+    /email-notifications/{emailNotificationLog}/send:
+        parameters:
+            - name: emailNotificationLog
+              in: path
+              required: true
+              description: Id of a log row.
+              schema:
+                  type: string
+                  format: uuid
+        post:
+            tags: [Email notifications]
+            operationId: emailNotifications.send
+            summary: Send or resend one notification
+            description: A row that was already sent is not sent again (flash `warning`). Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /email-notifications/{emailNotificationLog}:
+        parameters:
+            - name: emailNotificationLog
+              in: path
+              required: true
+              description: Id of a log row.
+              schema:
+                  type: string
+                  format: uuid
+        delete:
+            tags: [Email notifications]
+            operationId: emailNotifications.destroy
+            summary: Delete a log row
+            description: Only removes the log row. Requires `email-notifications.manage`.
+            x-required-permission: email-notifications.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /accounts:
+        get:
+            tags: [Accounts]
+            operationId: accounts.index
+            summary: List accounts
+            description: |
+                Accounts ordered by surname and name, plus the assignable permission groups and the notification permissions
+                that can be set on accounts and groups. Requires `accounts.manage`.
+            x-required-permission: accounts.manage
+            parameters:
+                - $ref: '#/components/parameters/XInertia'
+            responses:
+                '200':
+                    description: Inertia page `accounts`.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/InertiaPage'
+                                    - type: object
+                                      properties:
+                                          component:
+                                              const: accounts
+                                          props:
+                                              type: object
+                                              properties:
+                                                  accounts:
+                                                      type: array
+                                                      items:
+                                                          $ref: '#/components/schemas/Account'
+                                                  permissionGroups:
+                                                      type: array
+                                                      items:
+                                                          $ref: '#/components/schemas/PermissionGroupSummary'
+                                                  notificationPermissions:
+                                                      type: array
+                                                      items:
+                                                          type: object
+                                                          properties:
+                                                              value:
+                                                                  $ref: '#/components/schemas/NotificationPermission'
+                                                              label:
+                                                                  type: string
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [Accounts]
+            operationId: accounts.store
+            summary: Create an account
+            x-required-permission: accounts.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/StoreAccountRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/StoreAccountRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /accounts/{account}:
+        parameters:
+            - $ref: '#/components/parameters/AccountId'
+        put:
+            tags: [Accounts]
+            operationId: accounts.update
+            summary: Update an account
+            description: Updates the profile and permission group. The password is not touched. Requires `accounts.manage`.
+            x-required-permission: accounts.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateAccountRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdateAccountRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [Accounts]
+            operationId: accounts.destroy
+            summary: Delete an account
+            description: |
+                An administrator cannot delete their own account (`403`). Positions of the user on events become empty and
+                the user's availability days are deleted. Requires `accounts.manage`.
+            x-required-permission: accounts.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /permission-groups/{permissionGroup}/notification-permissions:
+        parameters:
+            - name: permissionGroup
+              in: path
+              required: true
+              schema:
+                  type: string
+                  format: uuid
+        put:
+            tags: [Accounts]
+            operationId: permission-groups.notification-permissions.update
+            summary: Set the notification permissions of a permission group
+            description: |
+                Replaces the notification permissions (values ending with `.notification`) of the group. The other permissions
+                of the group stay untouched. Every user of the group receives the matching notifications; a user who also has
+                the permission set directly receives one notification. Requires `accounts.manage`.
+            x-required-permission: accounts.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateGroupNotificationPermissionsRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/UpdateGroupNotificationPermissionsRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+    /accounts/{account}/password:
+        parameters:
+            - $ref: '#/components/parameters/AccountId'
+        put:
+            tags: [Accounts]
+            operationId: accounts.password.update
+            summary: Reset the password of an account
+            description: |
+                Sets a new password, rotates the remember token and, with the `database` session driver, signs the account
+                out of its other sessions. Requires `accounts.manage`.
+            x-required-permission: accounts.manage
+            security:
+                - sessionCookie: []
+                  xsrfToken: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ResetPasswordRequest'
+                    application/x-www-form-urlencoded:
+                        schema:
+                            $ref: '#/components/schemas/ResetPasswordRequest'
+            responses:
+                '302':
+                    $ref: '#/components/responses/Redirect'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+
+components:
+    securitySchemes:
+        sessionCookie:
+            type: apiKey
+            in: cookie
+            name: laravel-session
+            description: >-
+                Laravel session cookie set by `GET /login` and `POST /login`. Unless `SESSION_COOKIE` is set, the real
+                cookie name is derived from `APP_NAME` (`<app-name-slug>-session`, for example `laravel-session`).
+        xsrfToken:
+            type: apiKey
+            in: header
+            name: X-XSRF-TOKEN
+            description: Value of the `XSRF-TOKEN` cookie. Required for every non-GET request.
+
+    parameters:
+        XInertia:
+            name: X-Inertia
+            in: header
+            required: false
+            description: Send `true` to receive the Inertia page object as JSON instead of the HTML document.
+            schema:
+                type: string
+                enum: ['true']
+        Month:
+            name: month
+            in: query
+            required: false
+            description: Month to show, `YYYY-MM`. Defaults to the current month.
+            schema:
+                type: string
+                pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+                examples: ['2026-11']
+        PlanEventId:
+            name: planEvent
+            in: path
+            required: true
+            description: Plan event id.
+            schema:
+                type: string
+                format: uuid
+        ImportId:
+            name: googleSheetImportSetting
+            in: path
+            required: true
+            description: Id of a saved import (Google Sheet import setting).
+            schema:
+                type: string
+                format: uuid
+        AccountId:
+            name: account
+            in: path
+            required: true
+            description: User id.
+            schema:
+                type: string
+                format: uuid
+
+    responses:
+        InertiaPage:
+            description: 'Inertia page (JSON with `X-Inertia: true`, otherwise the HTML document).'
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/InertiaPage'
+                text/html:
+                    schema:
+                        type: string
+        Redirect:
+            description: >-
+                Redirect back to the originating page (or to the page named in the operation).
+                Flash messages (`success`, `warning`) are delivered with the next page response.
+            headers:
+                Location:
+                    description: Target URL.
+                    schema:
+                        type: string
+        Unauthenticated:
+            description: Not signed in. Redirect to `/login`, or `401` for JSON requests.
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/Error'
+        Forbidden:
+            description: The user lacks the required permission or the action is not allowed.
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/Error'
+                    example:
+                        message: This action is unauthorized.
+        NotFound:
+            description: The record does not exist.
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/Error'
+        ValidationError:
+            description: Validation failed. Browser requests are redirected back with the errors in the session.
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ValidationError'
+                    example:
+                        message: The email field is required.
+                        errors:
+                            email: [The email field is required.]
+
+    schemas:
+        Error:
+            type: object
+            properties:
+                message:
+                    type: string
+        ValidationError:
+            type: object
+            required: [message, errors]
+            properties:
+                message:
+                    type: string
+                errors:
+                    type: object
+                    additionalProperties:
+                        type: array
+                        items:
+                            type: string
+
+        Permission:
+            type: string
+            enum:
+                - calendar.view
+                - plan-calendar.view
+                - plan-calendar.edit
+                - plan-categories.manage
+                - plan-import.manage
+                - accounts.manage
+                - email-notifications.manage
+                - importGoogleSheet.notification
+                - planEventChange.notification
+
+        NotificationPermission:
+            type: string
+            description: A permission that only makes the user receive a notification. Can be set on a single user.
+            enum:
+                - importGoogleSheet.notification
+                - planEventChange.notification
+
+        SessionUser:
+            type: object
+            description: The authenticated user as shared with every page.
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                name:
+                    type: string
+                surname:
+                    type: string
+                email:
+                    type: string
+                    format: email
+                phone:
+                    type: [string, 'null']
+                permission_group:
+                    type: [string, 'null']
+                permissions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/Permission'
+
+        InertiaPage:
+            type: object
+            description: Inertia page object.
+            required: [component, props, url, version]
+            properties:
+                component:
+                    type: string
+                    description: Name of the React page in `resources/js/pages`.
+                props:
+                    type: object
+                    description: Page props plus the shared props below.
+                    properties:
+                        name:
+                            type: string
+                            description: Application name.
+                        auth:
+                            type: object
+                            properties:
+                                user:
+                                    oneOf:
+                                        - $ref: '#/components/schemas/SessionUser'
+                                        - type: 'null'
+                        errors:
+                            type: object
+                            additionalProperties:
+                                type: string
+                flash:
+                    type: object
+                    description: One-time messages set by the previous mutation.
+                    properties:
+                        success:
+                            type: string
+                        warning:
+                            type: string
+                url:
+                    type: string
+                version:
+                    type: [string, 'null']
+
+        LoginRequest:
+            type: object
+            required: [email, password]
+            properties:
+                email:
+                    type: string
+                    format: email
+                password:
+                    type: string
+                    format: password
+                remember:
+                    type: boolean
+                    description: Keep the user signed in.
+
+        CalendarDay:
+            type: object
+            properties:
+                date:
+                    type: string
+                    format: date
+                day:
+                    type: integer
+                isCurrentMonth:
+                    type: boolean
+                isToday:
+                    type: boolean
+
+        CalendarProps:
+            type: object
+            properties:
+                month:
+                    type: string
+                    examples: ['2026-11']
+                monthLabel:
+                    type: string
+                    examples: ['November 2026']
+                previousMonth:
+                    type: string
+                nextMonth:
+                    type: string
+                currentMonth:
+                    type: string
+                weekdays:
+                    type: array
+                    description: Short weekday names starting on Monday.
+                    items:
+                        type: string
+                weeks:
+                    type: array
+                    description: Weeks of seven days.
+                    items:
+                        type: array
+                        items:
+                            $ref: '#/components/schemas/CalendarDay'
+
+        PlanCategory:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                label:
+                    type: string
+                background_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                font_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+
+        PlanCategoryWithUsage:
+            allOf:
+                - $ref: '#/components/schemas/PlanCategory'
+                - type: object
+                  properties:
+                      objectsCount:
+                          type: integer
+                          description: Number of event objects using the category.
+
+        StaffMember:
+            type: object
+            description: A user who can be assigned to an event.
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                name:
+                    type: string
+                surname:
+                    type: string
+
+        PlanObject:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                text:
+                    type: string
+                plan_event_category_id:
+                    type: string
+                    format: uuid
+                category:
+                    $ref: '#/components/schemas/PlanCategory'
+
+        PlanAssignments:
+            type: object
+            description: User id per position, `null` when empty (or hidden).
+            properties:
+                operator_1:
+                    type: [string, 'null']
+                    format: uuid
+                operator_2:
+                    type: [string, 'null']
+                    format: uuid
+                operator_3:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_1:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_2:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_3:
+                    type: [string, 'null']
+                    format: uuid
+
+        PlanEvent:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                name:
+                    type: [string, 'null']
+                    description: Imported name; `null` for events added by hand.
+                showOriginalText:
+                    type: boolean
+                originalTextChanged:
+                    type: boolean
+                    description: An accepted import change renamed the event and nobody decided about the text yet.
+                awaitsChangeAcknowledgement:
+                    type: boolean
+                    description: |
+                        Plan calendar view only. The logged-in user is assigned to the event, `originalTextChanged` is
+                        `true` and the user has not confirmed the change yet. Always `false` on the edit page.
+                isImported:
+                    type: boolean
+                hasChanges:
+                    type: boolean
+                    description: The sheet differs from the accepted values.
+                changedFields:
+                    type: array
+                    items:
+                        type: string
+                changedName:
+                    type: [string, 'null']
+                    description: The name now in the sheet, when it differs.
+                assignments:
+                    $ref: '#/components/schemas/PlanAssignments'
+                objects:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanObject'
+
+        PlanDay:
+            type: object
+            properties:
+                date:
+                    type: string
+                    format: date
+                day:
+                    type: integer
+                weekday:
+                    type: string
+                isWeekend:
+                    type: boolean
+                isToday:
+                    type: boolean
+                availableUserIds:
+                    type: array
+                    description: Users who have time on the day, the first to select it first.
+                    items:
+                        type: string
+                        format: uuid
+                events:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanEvent'
+
+        PlanMonth:
+            type: object
+            properties:
+                month:
+                    type: string
+                monthLabel:
+                    type: string
+                previousMonth:
+                    type: string
+                nextMonth:
+                    type: string
+                currentMonth:
+                    type: string
+                staffVisible:
+                    type: boolean
+                days:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanDay'
+
+        UpdateAvailabilityRequest:
+            type: object
+            required: [date, available]
+            properties:
+                date:
+                    type: string
+                    format: date
+                    description: Must be on or after the first day of next month.
+                available:
+                    type: boolean
+                    description: '`true` selects the day, `false` clears it.'
+
+        StaffVisibilityRequest:
+            type: object
+            required: [month, visible]
+            properties:
+                month:
+                    type: string
+                    pattern: '^\d{4}-(0[1-9]|1[0-2])$'
+                visible:
+                    type: boolean
+
+        StorePlanEventRequest:
+            type: object
+            required: [date]
+            properties:
+                date:
+                    type: string
+                    format: date
+
+        UpdatePlanEventRequest:
+            type: object
+            required: [show_original_text]
+            properties:
+                show_original_text:
+                    type: boolean
+
+        AssignmentsRequest:
+            type: object
+            description: Every position must be present. Use `null` to clear a position.
+            required:
+                [
+                    operator_1,
+                    operator_2,
+                    operator_3,
+                    engineer_1,
+                    engineer_2,
+                    engineer_3,
+                ]
+            properties:
+                operator_1:
+                    type: [string, 'null']
+                    format: uuid
+                operator_2:
+                    type: [string, 'null']
+                    format: uuid
+                operator_3:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_1:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_2:
+                    type: [string, 'null']
+                    format: uuid
+                engineer_3:
+                    type: [string, 'null']
+                    format: uuid
+
+        ReorderObjectsRequest:
+            type: object
+            required: [objects]
+            properties:
+                objects:
+                    type: array
+                    description: Every object id of the event, in the new order.
+                    items:
+                        type: string
+                        format: uuid
+                    uniqueItems: true
+
+        SaveObjectRequest:
+            type: object
+            required: [plan_event_category_id, text]
+            properties:
+                plan_event_id:
+                    type: string
+                    format: uuid
+                    description: Required when creating; ignored when updating.
+                plan_event_category_id:
+                    type: string
+                    format: uuid
+                text:
+                    type: string
+                    maxLength: 255
+
+        EmailNotificationLogRow:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                action:
+                    type: string
+                    enum: [import_google_sheet, plan_event_change]
+                    description: What created the notification.
+                receiver_email:
+                    type: string
+                    format: email
+                subject:
+                    type: string
+                body:
+                    type: string
+                language:
+                    type: string
+                    enum: [en, cs]
+                state:
+                    type: string
+                    enum: [sent, failed, pending]
+                    description: '`pending` when no send was attempted yet, `failed` when the last send failed.'
+                attempts:
+                    type: integer
+                error_message:
+                    type: [string, 'null']
+                created_at:
+                    type: [string, 'null']
+                    format: date-time
+                last_attempt_at:
+                    type: [string, 'null']
+                    format: date-time
+
+        EmailNotificationActionSetting:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                action:
+                    type: string
+                    enum: [import_google_sheet, plan_event_change]
+                label:
+                    type: string
+                background_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                font_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                send_mode:
+                    type: string
+                    enum: [immediate, batch]
+                language:
+                    type: string
+                    enum: [en, cs]
+                batch_interval_minutes:
+                    type: integer
+                last_batch_sent_at:
+                    type: [string, 'null']
+                    format: date-time
+                receiver_permission:
+                    $ref: '#/components/schemas/Permission'
+                is_enabled:
+                    type: boolean
+
+        EmailNotificationsProps:
+            type: object
+            properties:
+                notifications:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/EmailNotificationLogRow'
+                pagination:
+                    type: object
+                    properties:
+                        page:
+                            type: integer
+                        perPage:
+                            type: integer
+                            examples: [20]
+                        total:
+                            type: integer
+                state:
+                    type: string
+                    enum: [all, sent, failed, pending]
+                    description: The applied filter.
+                counts:
+                    type: object
+                    description: Number of log rows per state over the whole log.
+                    properties:
+                        sent:
+                            type: integer
+                        failed:
+                            type: integer
+                        pending:
+                            type: integer
+                actionSettings:
+                    type: array
+                    description: The settings of every notification, ordered by label.
+                    items:
+                        $ref: '#/components/schemas/EmailNotificationActionSetting'
+                options:
+                    type: object
+                    description: The values the settings form accepts.
+                    properties:
+                        sendModes:
+                            type: array
+                            items:
+                                type: string
+                        languages:
+                            type: array
+                            items:
+                                type: string
+                        permissions:
+                            type: array
+                            items:
+                                $ref: '#/components/schemas/Permission'
+
+        SaveEmailNotificationActionSettingRequest:
+            type: object
+            required:
+                [
+                    label,
+                    background_color,
+                    font_color,
+                    send_mode,
+                    language,
+                    batch_interval_minutes,
+                    receiver_permission,
+                    is_enabled,
+                ]
+            properties:
+                label:
+                    type: string
+                    maxLength: 100
+                    description: Name of the notification shown to the administrators.
+                background_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    examples: ['#1565c0']
+                    description: Background of the name in the settings list and in the log.
+                font_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    examples: ['#ffffff']
+                send_mode:
+                    type: string
+                    enum: [immediate, batch]
+                    description: '`immediate` sends right after the action, `batch` sends the waiting rows on a schedule.'
+                language:
+                    type: string
+                    enum: [en, cs]
+                    description: Language of the notification template.
+                batch_interval_minutes:
+                    type: integer
+                    minimum: 1
+                    maximum: 1440
+                    examples: [5]
+                receiver_permission:
+                    type: string
+                    description: Value of a permission. Users who have it themselves or whose group has it receive the notification, once.
+                    examples: [importGoogleSheet.notification]
+                is_enabled:
+                    type: boolean
+                    description: A disabled notification creates no emails.
+
+        SaveCategoryRequest:
+            type: object
+            required: [label, background_color, font_color]
+            properties:
+                label:
+                    type: string
+                    maxLength: 100
+                    description: Unique among categories.
+                background_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    examples: ['#1565c0']
+                font_color:
+                    type: string
+                    pattern: '^#[0-9a-fA-F]{6}$'
+                    examples: ['#ffffff']
+
+        ImportSetting:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                hasApiKey:
+                    type: boolean
+                spreadsheet_id:
+                    type: [string, 'null']
+                sheet_names:
+                    type: array
+                    items:
+                        type: string
+                sheet_name:
+                    type: [string, 'null']
+                first_row:
+                    type: integer
+                last_row:
+                    type: integer
+                year:
+                    type: [integer, 'null']
+                auto_import:
+                    type: boolean
+                cron_expression:
+                    type: string
+                    examples: ['0 * * * *']
+                last_imported_at:
+                    type: [string, 'null']
+                    format: date-time
+                last_import_status:
+                    type: [string, 'null']
+                    enum: [success, failed, null]
+                last_import_message:
+                    type: [string, 'null']
+                changedCount:
+                    type: integer
+                    description: Rows of this spreadsheet and tab with pending changes.
+
+        ImportedRow:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                row_number:
+                    type: integer
+                date:
+                    type: string
+                    format: date
+                weekday:
+                    type: [string, 'null']
+                service:
+                    type: [string, 'null']
+                name:
+                    type: [string, 'null']
+                comment:
+                    type: [string, 'null']
+                operator_1:
+                    type: [string, 'null']
+                operator_2:
+                    type: [string, 'null']
+                htl_1:
+                    type: [string, 'null']
+                htl_2:
+                    type: [string, 'null']
+                changed_fields:
+                    type: object
+                    description: Pending changes as `field -> value now in the sheet` (`null` means the cell was emptied).
+                    additionalProperties:
+                        type: [string, 'null']
+                hasChanges:
+                    type: boolean
+
+        PlanImportProps:
+            type: object
+            properties:
+                imports:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ImportSetting'
+                selectedId:
+                    type: [string, 'null']
+                    format: uuid
+                rows:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ImportedRow'
+                defaults:
+                    type: object
+                    description: Values offered by the empty form.
+                    properties:
+                        hasApiKey:
+                            type: boolean
+                            description: A default `GOOGLE_SHEETS_API_KEY` is configured.
+                        spreadsheet_id:
+                            type: string
+                        first_row:
+                            type: integer
+                            examples: [15]
+                        last_row:
+                            type: integer
+                            examples: [40]
+                        year:
+                            type: integer
+                        cron_expression:
+                            type: string
+
+        SaveImportRequest:
+            type: object
+            required:
+                [
+                    spreadsheet_id,
+                    sheet_name,
+                    first_row,
+                    last_row,
+                    year,
+                    cron_expression,
+                ]
+            properties:
+                api_key:
+                    type: string
+                    maxLength: 255
+                    description: Required only when no saved or default key exists. Stored encrypted.
+                spreadsheet_id:
+                    type: string
+                    maxLength: 255
+                    pattern: '^[A-Za-z0-9_-]+$'
+                    description: Spreadsheet id; a pasted spreadsheet URL is reduced to the id.
+                sheet_name:
+                    type: string
+                    maxLength: 255
+                    description: Must be a tab of the spreadsheet.
+                first_row:
+                    type: integer
+                    minimum: 1
+                    maximum: 10000
+                    default: 15
+                last_row:
+                    type: integer
+                    maximum: 10000
+                    default: 40
+                    description: Greater than or equal to `first_row`.
+                year:
+                    type: integer
+                    minimum: 2000
+                    maximum: 2100
+                    description: Year of the first row; later rows move to the next year when the months wrap around.
+                auto_import:
+                    type: boolean
+                    default: false
+                cron_expression:
+                    type: string
+                    maxLength: 100
+                    default: '0 * * * *'
+                    description: Standard five-field cron expression evaluated by the every-minute scheduler.
+
+        ListTabsRequest:
+            type: object
+            required: [spreadsheet_id]
+            properties:
+                api_key:
+                    type: string
+                    maxLength: 255
+                spreadsheet_id:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]+$'
+                import_id:
+                    type: [string, 'null']
+                    format: uuid
+                    description: Saved import whose API key is used when `api_key` is empty.
+
+        ListTabsResponse:
+            type: object
+            required: [sheet_names]
+            properties:
+                sheet_names:
+                    type: array
+                    items:
+                        type: string
+
+        PermissionGroupSummary:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                name:
+                    type: string
+                notification_permissions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/NotificationPermission'
+
+        Account:
+            type: object
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                name:
+                    type: string
+                surname:
+                    type: string
+                email:
+                    type: string
+                    format: email
+                phone:
+                    type: [string, 'null']
+                permission_group_id:
+                    type: [string, 'null']
+                    format: uuid
+                permission_group:
+                    type: [string, 'null']
+                notification_permissions:
+                    type: array
+                    description: The notification permissions set on the account itself, not the ones of its group.
+                    items:
+                        $ref: '#/components/schemas/NotificationPermission'
+                isCurrentUser:
+                    type: boolean
+
+        StoreAccountRequest:
+            type: object
+            required: [name, surname, email, password, password_confirmation]
+            properties:
+                name:
+                    type: string
+                    maxLength: 255
+                surname:
+                    type: string
+                    maxLength: 255
+                email:
+                    type: string
+                    format: email
+                    maxLength: 255
+                    description: Unique among accounts.
+                phone:
+                    type: [string, 'null']
+                    maxLength: 255
+                permission_group_id:
+                    type: [string, 'null']
+                    format: uuid
+                permissions:
+                    type: array
+                    description: Notification permissions of the account. A missing value means none.
+                    items:
+                        $ref: '#/components/schemas/NotificationPermission'
+                password:
+                    type: string
+                    format: password
+                    description: Laravel default rules (min 8); in production 12+ characters, mixed case, numbers, symbols, not compromised.
+                password_confirmation:
+                    type: string
+                    format: password
+
+        UpdateGroupNotificationPermissionsRequest:
+            type: object
+            properties:
+                permissions:
+                    type: array
+                    description: The notification permissions of the group. A missing value means none.
+                    items:
+                        $ref: '#/components/schemas/NotificationPermission'
+
+        UpdateAccountRequest:
+            type: object
+            required: [name, surname, email]
+            properties:
+                name:
+                    type: string
+                    maxLength: 255
+                surname:
+                    type: string
+                    maxLength: 255
+                email:
+                    type: string
+                    format: email
+                    maxLength: 255
+                    description: Unique among the other accounts.
+                phone:
+                    type: [string, 'null']
+                    maxLength: 255
+                permission_group_id:
+                    type: [string, 'null']
+                    format: uuid
+                permissions:
+                    type: array
+                    description: Notification permissions of the account. A missing value removes them.
+                    items:
+                        $ref: '#/components/schemas/NotificationPermission'
+
+        UpdateProfileRequest:
+            type: object
+            required: [name, surname, email]
+            properties:
+                name:
+                    type: string
+                    maxLength: 255
+                surname:
+                    type: string
+                    maxLength: 255
+                email:
+                    type: string
+                    format: email
+                    maxLength: 255
+                    description: Unique among the other accounts.
+                phone:
+                    type: [string, 'null']
+                    maxLength: 255
+
+        UpdateProfilePasswordRequest:
+            type: object
+            required: [current_password, password, password_confirmation]
+            properties:
+                current_password:
+                    type: string
+                    format: password
+                    description: Must match the current password of the user.
+                password:
+                    type: string
+                    format: password
+                password_confirmation:
+                    type: string
+                    format: password
+
+        ResetPasswordRequest:
+            type: object
+            required: [password, password_confirmation]
+            properties:
+                password:
+                    type: string
+                    format: password
+                password_confirmation:
+                    type: string
+                    format: password
